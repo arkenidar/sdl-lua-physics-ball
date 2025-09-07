@@ -1,0 +1,417 @@
+local ffi = require("ffi")
+
+-- SDL3 FFI definitions
+ffi.cdef [[
+    // Basic SDL types
+    typedef struct SDL_Window SDL_Window;
+    typedef struct SDL_Renderer SDL_Renderer;
+    typedef struct SDL_Texture SDL_Texture;
+    typedef struct SDL_Surface SDL_Surface;
+
+    typedef enum {
+        SDL_PIXELFORMAT_UNKNOWN = 0,
+        SDL_PIXELFORMAT_RGBA32 = 376840196
+    } SDL_PixelFormat;
+
+    typedef enum {
+        SDL_TEXTUREACCESS_STATIC = 0,
+        SDL_TEXTUREACCESS_STREAMING = 1
+    } SDL_TextureAccess;
+
+    typedef struct {
+        float x, y, w, h;
+    } SDL_FRect;
+
+    typedef struct {
+        int x, y, w, h;
+    } SDL_Rect;
+
+    typedef struct {
+        float x, y;
+    } SDL_FPoint;
+
+    /* Use an opaque event buffer to avoid ABI/layout mismatches with SDL3's
+       SDL_Event. Accessing nested union fields via FFI can cause memory
+       corruption if the C layout differs. We'll only read the event type and
+       query mouse/keyboard state via safe API calls. */
+    typedef struct {
+        unsigned int type;
+        unsigned char data[128];
+    } SDL_Event;
+
+    // Event types
+    static const unsigned int SDL_EVENT_QUIT = 0x100;
+    static const unsigned int SDL_EVENT_KEY_DOWN = 0x300;
+    static const unsigned int SDL_EVENT_KEY_UP = 0x301;
+    static const unsigned int SDL_EVENT_MOUSE_BUTTON_DOWN = 0x401;
+    static const unsigned int SDL_EVENT_MOUSE_BUTTON_UP = 0x402;
+    static const unsigned int SDL_EVENT_MOUSE_MOTION = 0x400;
+
+    // Key codes
+    static const int SDLK_ESCAPE = 27;
+
+    // Mouse buttons
+    static const unsigned char SDL_BUTTON_LEFT = 1;
+
+    // Function declarations
+    int SDL_Init(unsigned int flags);
+    void SDL_Quit(void);
+    SDL_Window* SDL_CreateWindow(const char* title, int w, int h, unsigned int flags);
+    void SDL_DestroyWindow(SDL_Window* window);
+    SDL_Renderer* SDL_CreateRenderer(SDL_Window* window, const char* name);
+    void SDL_DestroyRenderer(SDL_Renderer* renderer);
+
+    int SDL_SetRenderDrawColor(SDL_Renderer* renderer, unsigned char r, unsigned char g, unsigned char b, unsigned char a);
+    int SDL_RenderClear(SDL_Renderer* renderer);
+    int SDL_RenderPresent(SDL_Renderer* renderer);
+    int SDL_RenderFillRect(SDL_Renderer* renderer, const SDL_FRect* rect);
+    int SDL_RenderTexture(SDL_Renderer* renderer, SDL_Texture* texture, const SDL_FRect* srcrect, const SDL_FRect* dstrect);
+    int SDL_RenderTextureRotated(SDL_Renderer* renderer, SDL_Texture* texture, const SDL_FRect* srcrect, const SDL_FRect* dstrect, double angle, const SDL_FPoint* center, int flip);
+
+    bool SDL_PollEvent(SDL_Event* event);
+    void SDL_Delay(unsigned int ms);
+    unsigned long SDL_GetTicks(void);
+
+    // Image loading (assuming SDL_image is available)
+    SDL_Surface* IMG_Load(const char* file);
+    SDL_Surface* SDL_LoadBMP(const char* file);
+    SDL_Texture* SDL_CreateTextureFromSurface(SDL_Renderer* renderer, SDL_Surface* surface);
+    void SDL_DestroySurface(SDL_Surface* surface);
+    void SDL_DestroyTexture(SDL_Texture* texture);
+
+    // Mouse state (use float pointers per SDL3 API)
+    unsigned int SDL_GetMouseState(float* x, float* y);
+    unsigned int SDL_GetRelativeMouseState(float* x, float* y);
+    // Keyboard state (returns pointer to an array indexed by SDL_Scancode)
+    unsigned char* SDL_GetKeyboardState(int* numkeys);
+
+    // Common scancode for Escape (SDL scancode values are stable across SDL2/3)
+    static const int SDL_SCANCODE_ESCAPE = 41;
+]]
+
+-- Load SDL3 library
+local sdl = ffi.load("SDL3")
+-- local img = ffi.load("SDL3_image")
+
+-- Initialize SDL
+local SDL_INIT_VIDEO = 0x00000020
+sdl.SDL_Init(SDL_INIT_VIDEO)
+
+-- Create window and renderer
+local window = sdl.SDL_CreateWindow("Arcade Ball in SDL3", 800, 600, 0)
+local renderer = sdl.SDL_CreateRenderer(window, nil)
+
+-- Game state variables
+-- Make the ball larger by default (1.0 = full size of the image)
+local scale = 1.0
+local ball_size = 128 -- Assume ball image is 128x128 since we can't load the actual image
+local ball_radius = scale * ball_size / 2
+
+-- Bounds
+local x_min, x_max, y_max = 0, 400, 400
+local border = 10
+local columns_width = 30
+local columns_height = y_max + ball_radius - border
+
+x_min = border + columns_width + ball_radius
+
+-- Ball physics
+local x = 250
+local y = 150
+-- Increase initial horizontal speed so movement is noticeable on start
+local speed_x = 50
+local speed_y = 5
+local ball_rotation = 0
+local ball_rotation_speed = 0
+local attenuation = 0.99
+
+-- Input state
+local keys_down = {}
+local mouse_down = false
+local last_mouse_x, last_mouse_y = 0.0, 0.0
+
+-- Create a simple ball texture (since we can't load the PNG in this example)
+local ball_texture = nil
+local function createBallTexture()
+    -- Try to load a BMP named "ball-shiny.bmp" from common locations.
+    local candidates = {
+        "./ball-shiny.bmp",
+        "ball-shiny.bmp",
+        "assets/ball-shiny.bmp",
+        "./assets/ball-shiny.bmp"
+    }
+
+    local surface = nil
+    for _, path in ipairs(candidates) do
+        surface = sdl.SDL_LoadBMP(path)
+        if surface ~= nil and surface ~= ffi.NULL then
+            print("Loaded ball bitmap from:", path)
+            break
+        end
+    end
+
+    if surface == nil or surface == ffi.NULL then
+        print("Warning: ball-shiny.bmp not found; using procedural ball")
+        ball_texture = nil
+        return
+    end
+
+    ball_texture = sdl.SDL_CreateTextureFromSurface(renderer, surface)
+    sdl.SDL_DestroySurface(surface)
+
+    if ball_texture == nil or ball_texture == ffi.NULL then
+        print("Warning: failed to create texture from surface; using procedural ball")
+        ball_texture = nil
+    end
+end
+
+-- Timing
+local last_time = tonumber(sdl.SDL_GetTicks())
+local function getDeltaTime()
+    local current_time = tonumber(sdl.SDL_GetTicks())
+    local dt = (current_time - last_time) / 1000.0 -- Convert to seconds (Lua number)
+    last_time = current_time
+    return dt
+end
+
+-- Lightweight runtime logger to observe motion without flooding output
+local log_last = tonumber(sdl.SDL_GetTicks())
+local log_interval_ms = 250
+
+-- Drawing helper functions
+local function drawRect(x, y, w, h)
+    local rect = ffi.new("SDL_FRect", { x = x, y = y, w = w, h = h })
+    sdl.SDL_RenderFillRect(renderer, rect)
+end
+
+local function drawBall(x, y, rotation)
+    -- If we have a loaded texture, render it (rotated around its center).
+    if ball_texture and ball_texture ~= ffi.NULL then
+        local w = ball_size * scale
+        local h = ball_size * scale
+        local dst = ffi.new("SDL_FRect", { x = x, y = y, w = w, h = h })
+        local center = ffi.new("SDL_FPoint", { x = w / 2, y = h / 2 })
+        local angle_deg = rotation * 180.0 / math.pi
+        sdl.SDL_RenderTextureRotated(renderer, ball_texture, ffi.NULL, dst, angle_deg, center, 0)
+        return
+    end
+
+    -- Fallback: draw a filled circle approximation
+    local radius = ball_radius
+    sdl.SDL_SetRenderDrawColor(renderer, 255, 255, 0, 255) -- Yellow ball
+    for dy = -radius, radius do
+        for dx = -radius, radius do
+            if dx * dx + dy * dy <= radius * radius then
+                local rect = ffi.new("SDL_FRect", { x = x + dx, y = y + dy, w = 1, h = 1 })
+                sdl.SDL_RenderFillRect(renderer, rect)
+            end
+        end
+    end
+end
+
+-- Game update function
+local function update(dt)
+    -- Horizontal velocity
+    local increment_horizontal = dt * speed_x * 10
+    x = x + increment_horizontal
+
+    -- Vertical: gravity and vertical velocity
+    local gravity = 1
+    speed_y = speed_y + gravity
+
+    local increment_vertical = dt * speed_y * 10
+    y = y + increment_vertical
+
+    -- Horizontal rebounds (left and right)
+    if x < x_min then
+        x = x_min
+        speed_x = speed_x * 0.6
+        speed_x = -speed_x
+    end
+    if x > x_max then
+        x = x_max
+        speed_x = speed_x * 0.6
+        speed_x = -speed_x
+    end
+
+    -- Vertical rebound (bottom rebound)
+    if y > y_max then
+        y = y_max
+        speed_y = speed_y * 0.6
+        speed_y = -speed_y
+    end
+
+    -- Ball rotation calculations
+    local ball_angle = math.pi / 32
+    local ball_rotation_speed_cumulative = 0
+
+    -- Friction (bottom, horizontal)
+    if y == y_max then
+        speed_x = speed_x * attenuation
+        ball_rotation_speed_cumulative = ball_rotation_speed_cumulative + ball_angle * speed_x
+    end
+
+    -- Friction (left, vertical)
+    if x == x_min then
+        speed_y = speed_y * attenuation
+        ball_rotation_speed_cumulative = ball_rotation_speed_cumulative + ball_angle * speed_y
+    end
+
+    -- Friction (right, vertical)
+    if x == x_max then
+        speed_y = speed_y * attenuation
+        ball_rotation_speed_cumulative = ball_rotation_speed_cumulative - ball_angle * speed_y
+    end
+
+    -- Ball rotation
+    if ball_rotation_speed_cumulative ~= 0 then
+        ball_rotation_speed = ball_rotation_speed_cumulative
+    end
+    ball_rotation_speed = ball_rotation_speed * attenuation
+    ball_rotation = ball_rotation + dt * ball_rotation_speed
+end
+
+-- Game draw function
+local function draw()
+    -- Clear screen with black background
+    sdl.SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255)
+    sdl.SDL_RenderClear(renderer)
+
+    -- Draw ball
+    drawBall(x - ball_radius, y - ball_radius, ball_rotation)
+
+    -- Draw walls with white color
+    sdl.SDL_SetRenderDrawColor(renderer, 255, 255, 255, 255)
+
+    -- Left column
+    drawRect(border, border, columns_width, columns_height)
+
+    -- Right column
+    drawRect(x_max + ball_radius, border, columns_width, columns_height)
+
+    -- Horizontal floor
+    drawRect(border, columns_height + border, x_max + ball_radius + columns_width - border, columns_width)
+
+    -- Present the rendered frame
+    sdl.SDL_RenderPresent(renderer)
+end
+
+-- Main game loop
+local running = true
+local event = ffi.new("SDL_Event")
+
+print("Starting SDL3 Ball Game...")
+
+-- Attempt to load ball texture from disk (falls back to procedural drawing)
+createBallTexture()
+
+-- Startup timing: record start ticks and give a short grace period where ESC won't quit
+local start_ticks = tonumber(sdl.SDL_GetTicks())
+local startup_grace_ms = 500 -- milliseconds
+
+-- Ensure there is visible motion at startup
+if math.abs(speed_x) + math.abs(speed_y) < 1e-6 then
+    speed_x = 50
+    speed_y = 5
+end
+
+-- Initialize previous ESC state to avoid exiting immediately if ESC is already down
+local nk_init = ffi.new("int[1]")
+local keys_init = sdl.SDL_GetKeyboardState(nk_init)
+local prev_escape_pressed = false
+if keys_init ~= nil and keys_init[ffi.C.SDL_SCANCODE_ESCAPE] == 1 then
+    prev_escape_pressed = true
+else
+    prev_escape_pressed = false
+end
+
+-- Initialize last mouse position to current mouse state to avoid a large first-delta
+do
+    local mx = ffi.new("float[1]")
+    local my = ffi.new("float[1]")
+    sdl.SDL_GetMouseState(mx, my)
+    last_mouse_x = (tonumber(mx[0]) or 0.0)
+    last_mouse_y = (tonumber(my[0]) or 0.0)
+end
+
+while running do
+    -- Handle events
+    while sdl.SDL_PollEvent(event) do
+        -- (logging suppressed to reduce noise)
+        if event.type == ffi.C.SDL_EVENT_QUIT then
+            print("SDL_EVENT_QUIT received, exiting main loop.")
+            running = false
+        elseif event.type == ffi.C.SDL_EVENT_KEY_DOWN then
+            -- Key down (details available via SDL_GetKeyboardState)
+        elseif event.type == ffi.C.SDL_EVENT_KEY_UP then
+            -- Key up (details available via SDL_GetKeyboardState)
+        elseif event.type == ffi.C.SDL_EVENT_MOUSE_BUTTON_DOWN then
+            -- start tracking mouse; coords read but not logged
+            local mx = ffi.new("float[1]")
+            local my = ffi.new("float[1]")
+            sdl.SDL_GetMouseState(mx, my)
+            mouse_down = true
+            last_mouse_x = (tonumber(mx[0]) or 0.0)
+            last_mouse_y = (tonumber(my[0]) or 0.0)
+        elseif event.type == ffi.C.SDL_EVENT_MOUSE_BUTTON_UP then
+            mouse_down = false
+        elseif event.type == ffi.C.SDL_EVENT_MOUSE_MOTION then
+            -- Use absolute coords and compute delta from last seen position.
+            local mx = ffi.new("float[1]")
+            local my = ffi.new("float[1]")
+            sdl.SDL_GetMouseState(mx, my)
+            local cur_mx = (tonumber(mx[0]) or 0.0)
+            local cur_my = (tonumber(my[0]) or 0.0)
+            local dx = cur_mx - last_mouse_x
+            local dy = cur_my - last_mouse_y
+            if mouse_down then
+                speed_x = speed_x + dx / 2
+                speed_y = speed_y + dy / 2
+            end
+            last_mouse_x = cur_mx
+            last_mouse_y = cur_my
+        else
+            -- other events suppressed
+        end
+    end
+
+    -- Update game logic
+    local dt = getDeltaTime()
+    update(dt)
+
+    -- periodic debug logging suppressed
+
+    -- Poll keyboard state and use edge detection for ESC so an already-pressed
+    -- ESC at startup doesn't immediately quit.
+    local nk = ffi.new("int[1]")
+    local keys = sdl.SDL_GetKeyboardState(nk)
+    local esc_now = false
+    if keys ~= nil and keys[ffi.C.SDL_SCANCODE_ESCAPE] == 1 then
+        esc_now = true
+    end
+    -- Ignore ESC presses during the startup grace period
+    local now_ticks = sdl.SDL_GetTicks()
+    if now_ticks - start_ticks >= startup_grace_ms then
+        if esc_now and not prev_escape_pressed then
+            print("ESC pressed, exiting main loop.")
+            running = false
+        end
+    end
+    prev_escape_pressed = esc_now
+
+    -- Draw everything
+    draw()
+
+    -- Small delay to limit frame rate
+    sdl.SDL_Delay(16) -- ~60 FPS
+end
+
+-- Cleanup
+if ball_texture and ball_texture ~= ffi.NULL then
+    sdl.SDL_DestroyTexture(ball_texture)
+end
+sdl.SDL_DestroyRenderer(renderer)
+sdl.SDL_DestroyWindow(window)
+sdl.SDL_Quit()
+
+print("Game finished successfully!")
