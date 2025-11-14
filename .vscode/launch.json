@@ -2,7 +2,7 @@
     "configurations": [
         {
             // https://marketplace.visualstudio.com/items?itemName=tomblind.local-lua-debugger-vscode
-            "name": "app.lua BUNDLED EXE",
+            "name": "[Windows] app.lua BUNDLED EXE",
             "request": "launch",
             "type": "lua-local",
             "program": {
@@ -12,8 +12,15 @@
             "stopOnEntry": false
         },
         {
+            "name": "[Wine] app.lua (mconsole)",
+            "type": "node-terminal",
+            "request": "launch",
+            "command": "wine windows-os/luajit-mconsole.exe app.lua",
+            "cwd": "${workspaceFolder}"
+        },
+        {
             // https://marketplace.visualstudio.com/items?itemName=tomblind.local-lua-debugger-vscode
-            "name": "app.lua (luajit from PATH)",
+            "name": "[PATH] app.lua (luajit from PATH)",
             "request": "launch",
             "type": "lua-local",
             "program": {
