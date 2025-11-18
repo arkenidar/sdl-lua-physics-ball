@@ -1,5 +1,8 @@
 local ffi = require("ffi")
 
+-- Configuration
+local USE_TTF = true -- Set to true to enable text rendering (requires SDL3_ttf)
+
 -- SDL3 FFI definitions
 ffi.cdef [[
     // Basic SDL types
@@ -87,15 +90,51 @@ ffi.cdef [[
 
     // Common scancode for Escape (SDL scancode values are stable across SDL2/3)
     static const int SDL_SCANCODE_ESCAPE = 41;
+
+    // SDL_ttf types and functions
+    typedef struct TTF_Font TTF_Font;
+
+    typedef struct {
+        unsigned char r, g, b, a;
+    } SDL_Color;
+
+    bool TTF_Init(void);
+    void TTF_Quit(void);
+    TTF_Font* TTF_OpenFont(const char* file, float ptsize);
+    void TTF_CloseFont(TTF_Font* font);
+    SDL_Surface* TTF_RenderText_Solid(TTF_Font* font, const char* text, size_t length, SDL_Color fg);
+    SDL_Surface* TTF_RenderText_Blended(TTF_Font* font, const char* text, size_t length, SDL_Color fg);
 ]]
 
 -- Load SDL3 library
 local sdl = ffi.load("SDL3")
 -- local img = ffi.load("SDL3_image")
 
+-- Try to load SDL3_ttf (optional, controlled by USE_TTF flag)
+local ttf = nil
+local ttf_available = false
+if USE_TTF then
+    local ok, result = pcall(function() return ffi.load("SDL3_ttf") end)
+    if ok then
+        ttf = result
+        ttf_available = true
+        print("SDL3_ttf loaded successfully")
+    else
+        print("SDL3_ttf not found, text rendering will be disabled")
+    end
+else
+    print("SDL3_ttf disabled by configuration")
+end
+
 -- Initialize SDL
 local SDL_INIT_VIDEO = 0x00000020
 sdl.SDL_Init(SDL_INIT_VIDEO)
+
+-- Initialize SDL_ttf (only if available)
+if ttf_available and ttf and not ttf.TTF_Init() then
+    print("Warning: TTF_Init failed, text rendering will be disabled")
+    ttf_available = false
+end
 
 -- Create window and renderer
 local window = sdl.SDL_CreateWindow("Arcade Ball in SDL3", 800, 600, 0)
@@ -129,6 +168,56 @@ local attenuation = 0.99
 local keys_down = {}
 local mouse_down = false
 local last_mouse_x, last_mouse_y = 0.0, 0.0
+
+-- Font and text rendering
+local font = nil
+local function loadFont()
+    if not ttf then
+        return
+    end
+
+    local font_paths = {
+        "assets/DejaVuSans.ttf"
+    }
+
+    for _, path in ipairs(font_paths) do
+        font = ttf.TTF_OpenFont(path, 24)
+        if font ~= ffi.NULL then
+            print("Loaded font from:", path)
+            return
+        end
+    end
+
+    print("Warning: No font found, text rendering disabled")
+    font = nil
+end
+
+local function renderText(text, x, y, r, g, b)
+    if not ttf_available or not font or font == ffi.NULL then
+        return
+    end
+
+    local color = ffi.new("SDL_Color", { r = r or 255, g = g or 255, b = b or 255, a = 255 })
+    local surface = ttf and ttf.TTF_RenderText_Blended(font, text, #text, color) or nil
+
+    if surface == nil or surface == ffi.NULL then
+        return
+    end
+
+    local texture = sdl.SDL_CreateTextureFromSurface(renderer, surface)
+    sdl.SDL_DestroySurface(surface)
+
+    if texture == nil or texture == ffi.NULL then
+        return
+    end
+
+    -- Use a reasonable text size (approximate)
+    local text_w = #text * 14
+    local text_h = 24
+    local dst = ffi.new("SDL_FRect", { x = x, y = y, w = text_w, h = text_h })
+    sdl.SDL_RenderTexture(renderer, texture, ffi.NULL, dst)
+    sdl.SDL_DestroyTexture(texture)
+end
 
 -- Create a simple ball texture (since we can't load the PNG in this example)
 local ball_texture = nil
@@ -167,10 +256,23 @@ end
 
 -- Timing
 local last_time = tonumber(sdl.SDL_GetTicks())
+local frame_count = 0
+local fps = 0
+local fps_update_time = tonumber(sdl.SDL_GetTicks())
+
 local function getDeltaTime()
     local current_time = tonumber(sdl.SDL_GetTicks())
     local dt = (current_time - last_time) / 1000.0 -- Convert to seconds (Lua number)
     last_time = current_time
+
+    -- Update FPS counter
+    frame_count = frame_count + 1
+    if current_time - fps_update_time >= 1000 then
+        fps = frame_count
+        frame_count = 0
+        fps_update_time = current_time
+    end
+
     return dt
 end
 
@@ -292,6 +394,11 @@ local function draw()
     -- Horizontal floor
     drawRect(border, columns_height + border, x_max + ball_radius + columns_width - border, columns_width)
 
+    -- Draw FPS counter and game info
+    renderText("FPS: " .. fps, 10, 10, 128, 128, 128)
+    renderText("Speed: " .. string.format("%.1f, %.1f", speed_x, speed_y), 10, 40, 128, 128, 128)
+    renderText("Pos: " .. string.format("%.0f, %.0f", x, y), 10, 70, 128, 128, 128)
+
     -- Present the rendered frame
     sdl.SDL_RenderPresent(renderer)
 end
@@ -301,6 +408,9 @@ local running = true
 local event = ffi.new("SDL_Event")
 
 print("Starting SDL3 Ball Game...")
+
+-- Load font for text rendering
+loadFont()
 
 -- Attempt to load ball texture from disk (falls back to procedural drawing)
 createBallTexture()
@@ -409,6 +519,12 @@ end
 -- Cleanup
 if ball_texture and ball_texture ~= ffi.NULL then
     sdl.SDL_DestroyTexture(ball_texture)
+end
+if ttf_available and ttf then
+    if font and font ~= ffi.NULL then
+        ttf.TTF_CloseFont(font)
+    end
+    ttf.TTF_Quit()
 end
 sdl.SDL_DestroyRenderer(renderer)
 sdl.SDL_DestroyWindow(window)
