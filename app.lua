@@ -395,6 +395,11 @@ local function update(dt)
         y = y_max
         speed_y = speed_y * 0.6
         speed_y = -speed_y
+
+        -- Stop bouncing if speed is very low (resting on ground)
+        if math.abs(speed_y) < 2 then
+            speed_y = 0
+        end
     end
 
     -- Ball rotation calculations
@@ -405,6 +410,11 @@ local function update(dt)
     if y == y_max then
         speed_x = speed_x * attenuation
         ball_rotation_speed_cumulative = ball_rotation_speed_cumulative + ball_angle * speed_x
+
+        -- Stop horizontal movement if speed is very low
+        if math.abs(speed_x) < 0.1 then
+            speed_x = 0
+        end
     end
 
     -- Friction (left, vertical)
