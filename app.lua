@@ -231,6 +231,15 @@ local function renderText(text, x, y, r, g, b)
     -- Use a reasonable text size (approximate)
     local text_w = #text * 14
     local text_h = 24
+
+    -- Draw black background rectangle with some padding
+    local padding = 4
+    sdl.SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255)
+    local bg_rect = ffi.new("SDL_FRect",
+        { x = x - padding, y = y - padding, w = text_w + padding * 2, h = text_h + padding * 2 })
+    sdl.SDL_RenderFillRect(renderer, bg_rect)
+
+    -- Draw the text
     local dst = ffi.new("SDL_FRect", { x = x, y = y, w = text_w, h = text_h })
     sdl.SDL_RenderTexture(renderer, texture, ffi.NULL, dst)
     sdl.SDL_DestroyTexture(texture)
@@ -445,10 +454,11 @@ local function draw()
     -- Horizontal floor
     drawRect(border, columns_height + border, x_max + ball_radius + columns_width - border, columns_width)
 
-    -- Draw FPS counter and game info
-    renderText("FPS: " .. fps, 10, 10, 128, 128, 128)
-    renderText("Speed: " .. string.format("%.1f, %.1f", speed_x, speed_y), 10, 40, 128, 128, 128)
-    renderText("Pos: " .. string.format("%.0f, %.0f", x, y), 10, 70, 128, 128, 128)
+    -- Draw FPS counter and game info (centered between walls)
+    local text_x = border + columns_width + (x_max - x_min) / 2 - 100
+    renderText("FPS: " .. fps, text_x, 10, 128, 128, 128)
+    renderText("Speed: " .. string.format("%.1f, %.1f", speed_x, speed_y), text_x, 40, 128, 128, 128)
+    renderText("Pos: " .. string.format("%.0f, %.0f", x, y), text_x, 70, 128, 128, 128)
 
     -- Present the rendered frame
     sdl.SDL_RenderPresent(renderer)
