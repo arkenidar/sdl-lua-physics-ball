@@ -1,7 +1,8 @@
 local ffi = require("ffi")
 
 -- Configuration
-local USE_TTF = true -- Set to true to enable text rendering (requires SDL3_ttf)
+local USE_TTF = true   -- Set to true to enable text rendering (requires SDL3_ttf)
+local USE_IMAGE = true -- Set to true to enable background image (requires SDL3_image)
 
 -- SDL3 FFI definitions
 ffi.cdef [[
@@ -124,6 +125,22 @@ if USE_TTF then
     end
 else
     print("SDL3_ttf disabled by configuration")
+end
+
+-- Try to load SDL3_image (optional, controlled by USE_IMAGE flag)
+local img = nil
+local image_available = false
+if USE_IMAGE then
+    local ok, result = pcall(function() return ffi.load("SDL3_image") end)
+    if ok then
+        img = result
+        image_available = true
+        print("SDL3_image loaded successfully")
+    else
+        print("SDL3_image not found, background image will be disabled")
+    end
+else
+    print("SDL3_image disabled by configuration")
 end
 
 -- Initialize SDL
@@ -254,6 +271,34 @@ local function createBallTexture()
     end
 end
 
+-- Background image texture
+local background_texture = nil
+local function loadBackgroundImage()
+    if not image_available or not img then
+        return
+    end
+
+    local image_paths = {
+        "assets/background.jpg",
+        "assets/image.jpg"
+    }
+
+    for _, path in ipairs(image_paths) do
+        local surface = img.IMG_Load(path)
+        if surface ~= nil and surface ~= ffi.NULL then
+            background_texture = sdl.SDL_CreateTextureFromSurface(renderer, surface)
+            sdl.SDL_DestroySurface(surface)
+
+            if background_texture ~= nil and background_texture ~= ffi.NULL then
+                print("Loaded background image from:", path)
+                return
+            end
+        end
+    end
+
+    print("Info: No background image found, using solid color")
+end
+
 -- Timing
 local last_time = tonumber(sdl.SDL_GetTicks())
 local frame_count = 0
@@ -379,6 +424,12 @@ local function draw()
     sdl.SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255)
     sdl.SDL_RenderClear(renderer)
 
+    -- Draw background image if available (semi-transparent overlay)
+    if background_texture and background_texture ~= ffi.NULL then
+        local bg_rect = ffi.new("SDL_FRect", { x = 0, y = 0, w = 800, h = 600 })
+        sdl.SDL_RenderTexture(renderer, background_texture, ffi.NULL, bg_rect)
+    end
+
     -- Draw ball
     drawBall(x - ball_radius, y - ball_radius, ball_rotation)
 
@@ -414,6 +465,9 @@ loadFont()
 
 -- Attempt to load ball texture from disk (falls back to procedural drawing)
 createBallTexture()
+
+-- Load background image if SDL3_image is available
+loadBackgroundImage()
 
 -- Startup timing: record start ticks and give a short grace period where ESC won't quit
 local start_ticks = tonumber(sdl.SDL_GetTicks())
@@ -519,6 +573,9 @@ end
 -- Cleanup
 if ball_texture and ball_texture ~= ffi.NULL then
     sdl.SDL_DestroyTexture(ball_texture)
+end
+if background_texture and background_texture ~= ffi.NULL then
+    sdl.SDL_DestroyTexture(background_texture)
 end
 if ttf_available and ttf then
     if font and font ~= ffi.NULL then
