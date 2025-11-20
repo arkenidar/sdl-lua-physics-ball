@@ -185,6 +185,68 @@ local attenuation = 0.99
 local keys_down = {}
 local mouse_down = false
 local last_mouse_x, last_mouse_y = 0.0, 0.0
+local ball_grabbed = false
+local grab_offset_x, grab_offset_y = 0, 0
+
+-- Wall system: flexible table-based wall definitions
+-- Each wall is a table with:
+--   x, y: top-left corner position
+--   w, h: width and height
+--   type: "vertical", "horizontal", "platform" (one-way from top), or "tilted"
+--   color: RGBA table (default white)
+--   angle: rotation in radians (default 0, used for tilted walls)
+local walls = {}
+
+-- Add a wall to the walls table
+local function addWall(x, y, w, h, wall_type, color, angle)
+    table.insert(walls, {
+        x = x,
+        y = y,
+        w = w,
+        h = h,
+        type = wall_type or "solid",
+        color = color or { 255, 255, 255, 255 }, -- default white
+        angle = angle or 0                       -- rotation in radians
+    })
+end
+
+local function clearWalls()
+    walls = {}
+end
+
+local function initializeWalls()
+    clearWalls()
+
+    -- Left column (vertical wall)
+    addWall(border, border, columns_width, columns_height, "vertical")
+
+    -- Right column (vertical wall)
+    addWall(x_max + ball_radius, border, columns_width, columns_height, "vertical")
+
+    -- Horizontal floor
+    addWall(border, columns_height + border, x_max + ball_radius + columns_width - border, columns_width, "horizontal")
+
+    -- Ceiling (top wall)
+    addWall(border, border - columns_width, x_max + ball_radius + columns_width - border, columns_width, "horizontal",
+        { 150, 150, 150, 255 })
+
+    -- Mid-height horizontal wall (half-width, connected to left wall)
+    local mid_height = border + columns_height / 2
+    local half_width = (x_max - x_min) / 2
+    addWall(border + columns_width, mid_height, half_width, 15, "horizontal", { 180, 180, 200, 255 })
+
+    -- Tilted wall (angled ramp in bottom-right corner)
+    local ramp_x = x_max - 80
+    local ramp_y = columns_height + border - 60
+    addWall(ramp_x, ramp_y, 100, 15, "tilted", { 200, 180, 150, 255 }, -math.pi / 4) -- -45 degrees
+
+    -- Optional: Add ceiling (commented out by default)
+    -- addWall(border, border - columns_width, x_max + ball_radius + columns_width - border, columns_width, "horizontal", {100, 100, 100, 255})
+
+    -- Optional: Add platforms (commented out by default)
+    -- addWall(150, 250, 100, 15, "platform", {200, 150, 100, 255})
+    -- addWall(300, 180, 120, 15, "platform", {150, 200, 100, 255})
+end
 
 -- Font and text rendering
 local font = nil
@@ -340,6 +402,17 @@ local function drawRect(x, y, w, h)
     sdl.SDL_RenderFillRect(renderer, rect)
 end
 
+-- Draw a single pixel with alpha blending (for antialiasing)
+local function drawPixelAlpha(x, y, r, g, b, alpha)
+    -- Clamp alpha to 0-255 range
+    alpha = math.max(0, math.min(255, alpha))
+    if alpha > 0 then
+        sdl.SDL_SetRenderDrawColor(renderer, r, g, b, alpha)
+        local rect = ffi.new("SDL_FRect", { x = x, y = y, w = 1, h = 1 })
+        sdl.SDL_RenderFillRect(renderer, rect)
+    end
+end
+
 local function drawBall(x, y, rotation)
     -- If we have a loaded texture, render it (rotated around its center).
     if ball_texture and ball_texture ~= ffi.NULL then
@@ -367,64 +440,233 @@ end
 
 -- Game update function
 local function update(dt)
-    -- Horizontal velocity
-    local increment_horizontal = dt * speed_x * 10
-    x = x + increment_horizontal
+    -- Limit velocity to prevent tunneling
+    local max_speed = 200
+    local speed_mag = math.sqrt(speed_x * speed_x + speed_y * speed_y)
+    if speed_mag > max_speed then
+        local scale = max_speed / speed_mag
+        speed_x = speed_x * scale
+        speed_y = speed_y * scale
+    end
 
     -- Vertical: gravity and vertical velocity
     local gravity = 1
     speed_y = speed_y + gravity
 
-    local increment_vertical = dt * speed_y * 10
-    y = y + increment_vertical
+    -- Subdivide movement for high speeds to prevent tunneling
+    -- Calculate total movement this frame
+    local movement_x = dt * speed_x * 10
+    local movement_y = dt * speed_y * 10
+    local movement_dist = math.sqrt(movement_x * movement_x + movement_y * movement_y)
 
-    -- Horizontal rebounds (left and right)
-    if x < x_min then
-        x = x_min
-        speed_x = speed_x * 0.6
-        speed_x = -speed_x
-    end
-    if x > x_max then
-        x = x_max
-        speed_x = speed_x * 0.6
-        speed_x = -speed_x
-    end
+    -- Split movement into multiple substeps if moving fast
+    -- Use ball radius * 0.5 as the maximum step size to ensure collision detection
+    local substeps = math.max(1, math.ceil(movement_dist / (ball_radius * 0.5)))
 
-    -- Vertical rebound (bottom rebound)
-    if y > y_max then
-        y = y_max
-        speed_y = speed_y * 0.6
-        speed_y = -speed_y
+    -- Limit substeps to prevent performance issues (5 substeps max)
+    substeps = math.min(substeps, 5)
 
-        -- Stop bouncing if speed is very low (resting on ground)
-        if math.abs(speed_y) < 2 then
-            speed_y = 0
-        end
-    end
-
-    -- Ball rotation calculations
+    local step_x = movement_x / substeps
+    local step_y = movement_y / substeps
+    -- Wall collision detection and physics - Box2D-style approach
     local ball_angle = math.pi / 32
     local ball_rotation_speed_cumulative = 0
+    local touching_horizontal = false
+    local touching_vertical_left = false
+    local touching_vertical_right = false
 
-    -- Friction (bottom, horizontal)
-    if y == y_max then
+    -- Helper: Check if circle intersects rectangle (AABB)
+    -- Returns: collision_bool, closest_x, closest_y, dx, dy, distance
+    local function circleRectCollision(cx, cy, radius, rx, ry, rw, rh)
+        -- Find closest point on AABB (axis-aligned bounding box) to circle center
+        -- Clamp circle center to rectangle bounds
+        local closest_x = math.max(rx, math.min(cx, rx + rw))
+        local closest_y = math.max(ry, math.min(cy, ry + rh))
+
+        -- Vector from closest point to circle center
+        local dx = cx - closest_x
+        local dy = cy - closest_y
+        local distance_sq = dx * dx + dy * dy
+
+        -- Collision if distance is less than radius
+        return distance_sq < (radius * radius), closest_x, closest_y, dx, dy, math.sqrt(distance_sq)
+    end
+
+    for step = 1, substeps do
+        x = x + step_x
+        y = y + step_y
+
+        for _, wall in ipairs(walls) do
+            local wall_left = wall.x
+            local wall_right = wall.x + wall.w
+            local wall_top = wall.y
+            local wall_bottom = wall.y + wall.h
+
+            local collides, closest_x, closest_y, dx, dy, dist
+
+            -- Handle tilted walls differently using local space transformation
+            if wall.type == "tilted" and wall.angle ~= 0 then
+                -- Transform ball position to wall's local space (rotate around wall center)
+                -- This allows us to do AABB collision detection on the rotated wall
+                local wall_cx = wall.x + wall.w / 2
+                local wall_cy = wall.y + wall.h / 2
+
+                -- Apply inverse rotation (-angle) using rotation matrix
+                local cos_a = math.cos(-wall.angle)
+                local sin_a = math.sin(-wall.angle)
+                local rel_x = x - wall_cx
+                local rel_y = y - wall_cy
+                local local_x = rel_x * cos_a - rel_y * sin_a + wall_cx
+                local local_y = rel_x * sin_a + rel_y * cos_a + wall_cy
+
+                -- Do collision detection in local space (wall is axis-aligned here)
+                local local_collides, local_closest_x, local_closest_y, local_dx, local_dy, local_dist =
+                    circleRectCollision(
+                        local_x, local_y, ball_radius, wall.x, wall.y, wall.w, wall.h
+                    )
+
+                if local_collides then
+                    -- Normalize collision vector in local space
+                    if local_dist > 0.001 then
+                        local_dx = local_dx / local_dist
+                        local_dy = local_dy / local_dist
+                    end
+
+                    -- Transform collision normal back to world space using forward rotation
+                    cos_a = math.cos(wall.angle)
+                    sin_a = math.sin(wall.angle)
+                    dx = local_dx * cos_a - local_dy * sin_a
+                    dy = local_dx * sin_a + local_dy * cos_a
+
+                    -- Push ball out along collision normal
+                    local penetration = ball_radius - local_dist
+                    x = x + dx * penetration
+                    y = y + dy * penetration
+
+                    -- Calculate velocity component along collision normal (dot product)
+                    local vel_dot = speed_x * dx + speed_y * dy
+
+                    if vel_dot < 0 then -- Moving into wall (negative dot product)
+                        -- Reflect velocity along normal with damping (coefficient 1.2 = 20% bounce)
+                        -- Formula: v' = v - (1 + restitution) * (v · n) * n
+                        speed_x = speed_x - 1.2 * vel_dot * dx
+                        speed_y = speed_y - 1.2 * vel_dot * dy
+
+                        -- Calculate tangent vector (perpendicular to normal, for sliding)
+                        local tx = -dy
+                        local ty = dx
+
+                        -- Velocity along tangent (parallel to surface, sliding direction)
+                        local tangent_vel = speed_x * tx + speed_y * ty
+
+                        -- Apply friction to tangent velocity (5% energy loss)
+                        tangent_vel = tangent_vel * 0.95
+
+                        -- Add rotation based on tangent velocity (ball rolling on slope)
+                        ball_rotation_speed_cumulative = ball_rotation_speed_cumulative + tangent_vel * ball_angle
+
+                        -- Check if resting on surface (low normal velocity)
+                        if math.abs(vel_dot) < 5 then
+                            touching_horizontal = true
+                        end
+                    end
+                end
+            else
+                -- Axis-aligned wall collision
+                collides, closest_x, closest_y, dx, dy, dist = circleRectCollision(
+                    x, y, ball_radius, wall_left, wall_top, wall.w, wall.h
+                )
+
+                if collides then
+                    local penetration = ball_radius - dist
+
+                    -- Normalize collision vector to get collision normal
+                    if dist > 0.001 then
+                        dx = dx / dist
+                        dy = dy / dist
+                    else
+                        -- Edge case: ball center is inside rectangle
+                        -- Push out in direction of minimum separation
+                        local push_left = x - wall_left
+                        local push_right = wall_right - x
+                        local push_up = y - wall_top
+                        local push_down = wall_bottom - y
+
+                        -- Find which edge is closest and use that as collision normal
+                        local min_push = math.min(push_left, push_right, push_up, push_down)
+                        if min_push == push_left then
+                            dx, dy = -1, 0 -- Push left
+                        elseif min_push == push_right then
+                            dx, dy = 1, 0  -- Push right
+                        elseif min_push == push_up then
+                            dx, dy = 0, -1 -- Push up
+                        else
+                            dx, dy = 0, 1  -- Push down
+                        end
+                        penetration = ball_radius
+                    end
+
+                    -- Separate ball from wall
+                    x = x + dx * penetration
+                    y = y + dy * penetration
+
+                    -- Determine collision axis and apply response
+                    local is_vertical_collision = math.abs(dy) > math.abs(dx)
+
+                    if is_vertical_collision then
+                        -- Vertical collision (floor/ceiling)
+                        if wall.type == "platform" and dy < 0 then
+                            -- Platform with one-way collision: only collide from above (dy > 0)
+                            -- Ball is coming from below (dy < 0), so skip this collision
+                        elseif wall.type == "horizontal" or wall.type == "platform" then
+                            -- Bounce with damping (60% energy retention)
+                            local vel_dot = speed_x * dx + speed_y * dy
+                            if vel_dot < 0 then -- Moving into wall
+                                speed_y = -speed_y * 0.6
+                                touching_horizontal = true
+
+                                -- Stop vertical bouncing if speed is very low (resting)
+                                if math.abs(speed_y) < 2 then
+                                    speed_y = 0
+                                end
+                            end
+                        end
+                    else
+                        -- Horizontal collision (left/right walls)
+                        if wall.type == "vertical" or wall.type == "horizontal" then
+                            local vel_dot = speed_x * dx + speed_y * dy
+                            if vel_dot < 0 then -- Moving into wall
+                                speed_x = -speed_x * 0.6
+
+                                if dx > 0 then
+                                    touching_vertical_right = true
+                                else
+                                    touching_vertical_left = true
+                                end
+                            end
+                        end
+                    end
+                end
+            end
+        end -- end of wall loop
+    end     -- end of substep loop
+
+    -- Apply friction based on wall contact
+    if touching_horizontal then
         speed_x = speed_x * attenuation
         ball_rotation_speed_cumulative = ball_rotation_speed_cumulative + ball_angle * speed_x
 
-        -- Stop horizontal movement if speed is very low
         if math.abs(speed_x) < 0.1 then
             speed_x = 0
         end
     end
 
-    -- Friction (left, vertical)
-    if x == x_min then
+    if touching_vertical_left then
         speed_y = speed_y * attenuation
         ball_rotation_speed_cumulative = ball_rotation_speed_cumulative + ball_angle * speed_y
     end
 
-    -- Friction (right, vertical)
-    if x == x_max then
+    if touching_vertical_right then
         speed_y = speed_y * attenuation
         ball_rotation_speed_cumulative = ball_rotation_speed_cumulative - ball_angle * speed_y
     end
@@ -452,17 +694,208 @@ local function draw()
     -- Draw ball
     drawBall(x - ball_radius, y - ball_radius, ball_rotation)
 
-    -- Draw walls with white color
-    sdl.SDL_SetRenderDrawColor(renderer, 255, 255, 255, 255)
+    -- Helper function: Draw an antialiased ring using Xiaolin Wu-style algorithm
+    local function drawRingAntialiased(center_x, center_y, inner_radius, outer_radius, r, g, b, a)
+        -- Bounding box for the ring
+        local min_y = math.floor(center_y - outer_radius - 1)
+        local max_y = math.ceil(center_y + outer_radius + 1)
 
-    -- Left column
-    drawRect(border, border, columns_width, columns_height)
+        -- For each scanline in the bounding box
+        for scan_y = min_y, max_y do
+            local dy = scan_y - center_y
+            local dy_sq = dy * dy
 
-    -- Right column
-    drawRect(x_max + ball_radius, border, columns_width, columns_height)
+            -- Calculate intersection points with outer and inner circles
+            local outer_radius_sq = outer_radius * outer_radius
+            local inner_radius_sq = inner_radius * inner_radius
 
-    -- Horizontal floor
-    drawRect(border, columns_height + border, x_max + ball_radius + columns_width - border, columns_width)
+            if dy_sq <= outer_radius_sq then
+                -- Scanline intersects outer circle
+                local outer_x_offset = math.sqrt(outer_radius_sq - dy_sq)
+                local x_left_outer = center_x - outer_x_offset
+                local x_right_outer = center_x + outer_x_offset
+
+                if dy_sq <= inner_radius_sq then
+                    -- Scanline also intersects inner circle (ring region)
+                    local inner_x_offset = math.sqrt(inner_radius_sq - dy_sq)
+                    local x_left_inner = center_x - inner_x_offset
+                    local x_right_inner = center_x + inner_x_offset
+
+                    -- LEFT SEGMENT: from outer left edge to inner left edge
+                    local left_start = math.floor(x_left_outer)
+                    local left_end = math.floor(x_left_inner)
+
+                    -- Outer left edge pixel - fractional coverage (pixel partially covered)
+                    local outer_left_frac = 1 - (x_left_outer - left_start)
+                    if outer_left_frac > 0.01 then
+                        drawPixelAlpha(left_start, scan_y, r, g, b, a * outer_left_frac)
+                    end
+
+                    -- Solid pixels in left segment
+                    sdl.SDL_SetRenderDrawColor(renderer, r, g, b, a)
+                    if left_end > left_start then
+                        drawRect(left_start + 1, scan_y, left_end - left_start, 1)
+                    end
+
+                    -- Inner left edge pixel - fractional coverage
+                    local inner_left_frac = x_left_inner - left_end
+                    if inner_left_frac > 0.01 then
+                        drawPixelAlpha(left_end + 1, scan_y, r, g, b, a * inner_left_frac)
+                    end
+
+                    -- RIGHT SEGMENT: from inner right edge to outer right edge
+                    local right_start = math.floor(x_right_inner)
+                    local right_end = math.floor(x_right_outer)
+
+                    -- Inner right edge pixel - fractional coverage
+                    local inner_right_frac = 1 - (x_right_inner - right_start)
+                    if inner_right_frac > 0.01 then
+                        drawPixelAlpha(right_start, scan_y, r, g, b, a * inner_right_frac)
+                    end
+
+                    -- Solid pixels in right segment
+                    sdl.SDL_SetRenderDrawColor(renderer, r, g, b, a)
+                    if right_end > right_start then
+                        drawRect(right_start + 1, scan_y, right_end - right_start, 1)
+                    end
+
+                    -- Outer right edge pixel - fractional coverage
+                    local outer_right_frac = x_right_outer - right_end
+                    if outer_right_frac > 0.01 then
+                        drawPixelAlpha(right_end + 1, scan_y, r, g, b, a * outer_right_frac)
+                    end
+                else
+                    -- Scanline is outside inner circle, draw full width with antialiasing
+                    local start_x = math.floor(x_left_outer)
+                    local end_x = math.floor(x_right_outer)
+
+                    -- Left edge antialiasing
+                    local left_frac = 1 - (x_left_outer - start_x)
+                    if left_frac > 0.01 then
+                        drawPixelAlpha(start_x, scan_y, r, g, b, a * left_frac)
+                    end
+
+                    -- Solid middle
+                    sdl.SDL_SetRenderDrawColor(renderer, r, g, b, a)
+                    if end_x > start_x then
+                        drawRect(start_x + 1, scan_y, end_x - start_x, 1)
+                    end
+
+                    -- Right edge antialiasing
+                    local right_frac = x_right_outer - end_x
+                    if right_frac > 0.01 then
+                        drawPixelAlpha(end_x + 1, scan_y, r, g, b, a * right_frac)
+                    end
+                end
+            end
+        end
+    end
+
+    -- Visual feedback for ball grab state
+    if ball_grabbed then
+        -- Draw bright ring around grabbed ball with antialiasing
+        local inner_radius = ball_radius + 5
+        local outer_radius = ball_radius + 8
+        drawRingAntialiased(x, y, inner_radius, outer_radius, 255, 220, 0, 255)
+    else
+        -- Show hover hint when mouse is near ball
+        local mx = ffi.new("float[1]")
+        local my = ffi.new("float[1]")
+        sdl.SDL_GetMouseState(mx, my)
+        local cur_mx = (tonumber(mx[0]) or 0.0)
+        local cur_my = (tonumber(my[0]) or 0.0)
+        local dx = cur_mx - x
+        local dy = cur_my - y
+        local dist_sq = dx * dx + dy * dy
+        local hover_radius = ball_radius * 1.5
+
+        if dist_sq <= (hover_radius * hover_radius) then
+            -- Draw subtle ring for hover state with antialiasing
+            local inner_radius = ball_radius + 4
+            local outer_radius = ball_radius + 6
+            drawRingAntialiased(x, y, inner_radius, outer_radius, 200, 200, 200, 255)
+        end
+    end
+
+    -- Draw all walls dynamically
+    for _, wall in ipairs(walls) do
+        local c = wall.color
+        sdl.SDL_SetRenderDrawColor(renderer, c[1], c[2], c[3], c[4])
+
+        if wall.type == "tilted" and wall.angle ~= 0 then
+            -- Draw rotated rectangle with antialiased edges using scanline algorithm
+            local cx = wall.x + wall.w / 2
+            local cy = wall.y + wall.h / 2
+            local cos_a = math.cos(wall.angle)
+            local sin_a = math.sin(wall.angle)
+
+            -- Calculate all 4 corners in world space using rotation matrix
+            -- Rotation matrix: [cos -sin] [local_x]   [world_x]
+            --                  [sin  cos] [local_y] = [world_y]
+            local hw = wall.w / 2
+            local hh = wall.h / 2
+            local corners = {
+                { x = -hw * cos_a - (-hh) * sin_a + cx, y = -hw * sin_a + (-hh) * cos_a + cy }, -- Top-left
+                { x = hw * cos_a - (-hh) * sin_a + cx,  y = hw * sin_a + (-hh) * cos_a + cy },  -- Top-right
+                { x = hw * cos_a - hh * sin_a + cx,     y = hw * sin_a + hh * cos_a + cy },     -- Bottom-right
+                { x = -hw * cos_a - hh * sin_a + cx,    y = -hw * sin_a + hh * cos_a + cy }     -- Bottom-left
+            }
+
+            -- Find Y-axis bounding box for scanline iteration
+            local min_y = math.min(corners[1].y, corners[2].y, corners[3].y, corners[4].y)
+            local max_y = math.max(corners[1].y, corners[2].y, corners[3].y, corners[4].y)
+
+            -- Scanline fill algorithm with antialiasing: for each horizontal line, find edge intersections
+            for scan_y = math.floor(min_y) - 1, math.ceil(max_y) + 1 do
+                local intersections = {}
+
+                -- Find intersections of horizontal scanline with all 4 edges of polygon
+                for i = 1, 4 do
+                    local j = (i % 4) + 1 -- Next corner (wraps around)
+                    local y1, y2 = corners[i].y, corners[j].y
+                    local x1, x2 = corners[i].x, corners[j].x
+
+                    -- Check if scanline crosses this edge (edge straddles the scanline)
+                    if (y1 <= scan_y and y2 > scan_y) or (y2 <= scan_y and y1 > scan_y) then
+                        -- Linear interpolation to find x coordinate at scanline intersection
+                        local t = (scan_y - y1) / (y2 - y1)
+                        local intersect_x = x1 + t * (x2 - x1)
+                        table.insert(intersections, intersect_x)
+                    end
+                end
+
+                -- Sort intersections left to right and draw antialiased horizontal line segments
+                table.sort(intersections)
+                for i = 1, #intersections - 1, 2 do
+                    local x_left = intersections[i]
+                    local x_right = intersections[i + 1]
+
+                    local x_start = math.floor(x_left)
+                    local x_end = math.floor(x_right)
+
+                    -- Antialiased left edge pixel
+                    local left_frac = x_left - x_start
+                    if left_frac > 0.01 then
+                        drawPixelAlpha(x_start, scan_y, c[1], c[2], c[3], c[4] * (1 - left_frac))
+                    end
+
+                    -- Solid middle segment
+                    sdl.SDL_SetRenderDrawColor(renderer, c[1], c[2], c[3], c[4])
+                    if x_end > x_start then
+                        drawRect(x_start + 1, scan_y, x_end - x_start, 1)
+                    end
+
+                    -- Antialiased right edge pixel
+                    local right_frac = 1 - (x_right - x_end)
+                    if right_frac > 0.01 then
+                        drawPixelAlpha(x_end + 1, scan_y, c[1], c[2], c[3], c[4] * right_frac)
+                    end
+                end
+            end
+        else
+            drawRect(wall.x, wall.y, wall.w, wall.h)
+        end
+    end
 
     -- Draw FPS counter and game info (centered between walls)
     local text_x = border + columns_width + (x_max - x_min) / 2 - 100
@@ -488,6 +921,10 @@ createBallTexture()
 
 -- Load background image if SDL3_image is available
 loadBackgroundImage()
+
+-- Initialize the wall system
+initializeWalls()
+print("Initialized " .. #walls .. " walls")
 
 -- Startup timing: record start ticks and give a short grace period where ESC won't quit
 local start_ticks = tonumber(sdl.SDL_GetTicks())
@@ -530,17 +967,36 @@ while running do
         elseif event.type == ffi.C.SDL_EVENT_KEY_UP then
             -- Key up (details available via SDL_GetKeyboardState)
         elseif event.type == ffi.C.SDL_EVENT_MOUSE_BUTTON_DOWN then
-            -- start tracking mouse; coords read but not logged
             local mx = ffi.new("float[1]")
             local my = ffi.new("float[1]")
             sdl.SDL_GetMouseState(mx, my)
+            local cur_mx = (tonumber(mx[0]) or 0.0)
+            local cur_my = (tonumber(my[0]) or 0.0)
+
+            -- Check if clicking near the ball (with generous grab radius)
+            local dx = cur_mx - x
+            local dy = cur_my - y
+            local dist_sq = dx * dx + dy * dy
+            local grab_radius = ball_radius * 1.5 -- 50% larger grab area
+
+            if dist_sq <= (grab_radius * grab_radius) then
+                ball_grabbed = true
+                grab_offset_x = x - cur_mx
+                grab_offset_y = y - cur_my
+                -- Don't reset velocity immediately for smoother feel
+            end
+
             mouse_down = true
-            last_mouse_x = (tonumber(mx[0]) or 0.0)
-            last_mouse_y = (tonumber(my[0]) or 0.0)
+            last_mouse_x = cur_mx
+            last_mouse_y = cur_my
         elseif event.type == ffi.C.SDL_EVENT_MOUSE_BUTTON_UP then
             mouse_down = false
+
+            if ball_grabbed then
+                -- Apply current velocity as throw
+                ball_grabbed = false
+            end
         elseif event.type == ffi.C.SDL_EVENT_MOUSE_MOTION then
-            -- Use absolute coords and compute delta from last seen position.
             local mx = ffi.new("float[1]")
             local my = ffi.new("float[1]")
             sdl.SDL_GetMouseState(mx, my)
@@ -548,10 +1004,21 @@ while running do
             local cur_my = (tonumber(my[0]) or 0.0)
             local dx = cur_mx - last_mouse_x
             local dy = cur_my - last_mouse_y
-            if mouse_down then
+
+            if ball_grabbed and mouse_down then
+                -- Direct ball positioning with offset
+                local target_x = cur_mx + grab_offset_x
+                local target_y = cur_my + grab_offset_y
+
+                -- Set velocity based on movement for smooth dragging
+                speed_x = (target_x - x) * 5
+                speed_y = (target_y - y) * 5
+            elseif mouse_down then
+                -- Apply force when dragging but not grabbed
                 speed_x = speed_x + dx / 2
                 speed_y = speed_y + dy / 2
             end
+
             last_mouse_x = cur_mx
             last_mouse_y = cur_my
         else

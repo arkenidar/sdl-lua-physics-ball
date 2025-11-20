@@ -1,0 +1,463 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SDL Lua Physics Ball - README</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            line-height: 1.6;
+            max-width: 900px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+            color: #333;
+        }
+
+        h1 {
+            color: #2c3e50;
+            border-bottom: 3px solid #3498db;
+            padding-bottom: 10px;
+        }
+
+        h2 {
+            color: #34495e;
+            margin-top: 30px;
+            border-bottom: 2px solid #bdc3c7;
+            padding-bottom: 5px;
+        }
+
+        h3 {
+            color: #7f8c8d;
+        }
+
+        code {
+            background-color: #ecf0f1;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-family: 'Courier New', monospace;
+            color: #c0392b;
+        }
+
+        pre {
+            background-color: #2c3e50;
+            color: #ecf0f1;
+            padding: 15px;
+            border-radius: 5px;
+            overflow-x: auto;
+        }
+
+        pre code {
+            background-color: transparent;
+            color: #ecf0f1;
+            padding: 0;
+        }
+
+        ul,
+        ol {
+            margin-left: 20px;
+        }
+
+        li {
+            margin: 8px 0;
+        }
+
+        .feature-box {
+            background-color: #fff;
+            border-left: 4px solid #3498db;
+            padding: 15px;
+            margin: 15px 0;
+            border-radius: 3px;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+        }
+
+        .warning {
+            background-color: #fff3cd;
+            border-left: 4px solid #ffc107;
+            padding: 10px;
+            margin: 10px 0;
+            border-radius: 3px;
+        }
+
+        .note {
+            background-color: #d1ecf1;
+            border-left: 4px solid #17a2b8;
+            padding: 10px;
+            margin: 10px 0;
+            border-radius: 3px;
+        }
+
+        table {
+            border-collapse: collapse;
+            width: 100%;
+            margin: 15px 0;
+            background-color: #fff;
+        }
+
+        th,
+        td {
+            border: 1px solid #ddd;
+            padding: 12px;
+            text-align: left;
+        }
+
+        th {
+            background-color: #3498db;
+            color: white;
+        }
+
+        tr:nth-child(even) {
+            background-color: #f2f2f2;
+        }
+
+        a {
+            color: #3498db;
+            text-decoration: none;
+        }
+
+        a:hover {
+            text-decoration: underline;
+        }
+    </style>
+</head>
+
+<body>
+    <h1>🎮 SDL Lua Physics Ball</h1>
+
+    <p>An interactive physics simulation game built with <strong>LuaJIT</strong> and <strong>SDL3</strong>, featuring a
+        bouncing ball with realistic physics, tilted walls, and Box2D-style collision detection.</p>
+
+    <h2>✨ Features</h2>
+
+    <div class="feature-box">
+        <ul>
+            <li><strong>Realistic Physics Engine</strong> - Box2D-style collision detection with proper separation and
+                velocity-based response</li>
+            <li><strong>Flexible Wall System</strong> - Support for vertical, horizontal, platform (one-way), and tilted
+                walls</li>
+            <li><strong>Interactive Ball Control</strong> - Click and drag to grab and throw the ball with visual
+                feedback</li>
+            <li><strong>Tilted Wall Support</strong> - Rotated walls with proper collision normals and ball rotation on
+                slopes</li>
+            <li><strong>Anti-Tunneling</strong> - Velocity limiting and substep integration prevent ball from phasing
+                through walls</li>
+            <li><strong>Scanline Rendering</strong> - Efficient polygon fill algorithm for drawing rotated rectangles
+            </li>
+            <li><strong>Visual Feedback</strong> - Yellow ring when ball is grabbed, gray ring on hover</li>
+            <li><strong>Real-time Stats</strong> - FPS counter, speed, and position display</li>
+        </ul>
+    </div>
+
+    <h2>📋 Requirements</h2>
+
+    <table>
+        <tr>
+            <th>Component</th>
+            <th>Required</th>
+            <th>Description</th>
+        </tr>
+        <tr>
+            <td><strong>LuaJIT</strong></td>
+            <td>✅ Yes</td>
+            <td>Just-In-Time compiler for Lua with FFI support</td>
+        </tr>
+        <tr>
+            <td><strong>SDL3</strong></td>
+            <td>✅ Yes</td>
+            <td>Simple DirectMedia Layer 3 for graphics and input</td>
+        </tr>
+        <tr>
+            <td><strong>SDL3_ttf</strong></td>
+            <td>⚠️ Optional</td>
+            <td>TrueType font rendering (disable with USE_TTF = false)</td>
+        </tr>
+        <tr>
+            <td><strong>SDL3_image</strong></td>
+            <td>⚠️ Optional</td>
+            <td>Image loading for backgrounds (disable with USE_IMAGE = false)</td>
+        </tr>
+    </table>
+
+    <h2>🔧 Installation</h2>
+
+    <h3>Debian 13</h3>
+    <pre><code># Install all dependencies in one command
+sudo apt install luajit libsdl3-dev libsdl3-ttf-dev libsdl3-image-dev
+</code></pre>
+
+    <h3>Other Linux (Ubuntu/Debian-based)</h3>
+    <pre><code># Install LuaJIT
+sudo apt-get install luajit
+
+# Install SDL3 libraries (if available in your distribution)
+sudo apt-get install libsdl3-dev libsdl3-ttf-dev libsdl3-image-dev
+
+# If SDL3 is not available, you may need to build from source
+# Check SDL website for latest builds: https://github.com/libsdl-org/SDL
+</code></pre>
+
+    <h3>Windows</h3>
+    <div class="note">
+        <strong>Note:</strong> The project includes batch files for Windows:
+        <ul>
+            <li><code>app-mconsole.cmd</code> - Run with console window</li>
+            <li><code>app-mwindows.cmd</code> - Run without console window</li>
+        </ul>
+    </div>
+
+    <p>See <code>windows-os/bundle--mingw-copy-here--textual-informations.txt</code> for Windows-specific setup
+        instructions.</p>
+
+    <h2>🚀 How to Run</h2>
+
+    <pre><code>luajit app.lua</code></pre>
+
+    <p>Or on Windows, double-click one of the batch files:</p>
+    <ul>
+        <li><code>app-mconsole.cmd</code> - Shows debug output in console</li>
+        <li><code>app-mwindows.cmd</code> - Clean window without console</li>
+    </ul>
+
+    <h2>🎮 Controls</h2>
+
+    <table>
+        <tr>
+            <th>Action</th>
+            <th>Control</th>
+            <th>Description</th>
+        </tr>
+        <tr>
+            <td><strong>Grab Ball</strong></td>
+            <td>Left Click (near ball)</td>
+            <td>Click within 1.5× ball radius to grab</td>
+        </tr>
+        <tr>
+            <td><strong>Drag Ball</strong></td>
+            <td>Hold & Drag</td>
+            <td>Move mouse while holding to drag ball</td>
+        </tr>
+        <tr>
+            <td><strong>Throw Ball</strong></td>
+            <td>Release Click</td>
+            <td>Release to throw with current velocity</td>
+        </tr>
+        <tr>
+            <td><strong>Apply Force</strong></td>
+            <td>Click & Drag (away from ball)</td>
+            <td>Push ball without grabbing it</td>
+        </tr>
+        <tr>
+            <td><strong>Exit</strong></td>
+            <td>ESC</td>
+            <td>Close the game</td>
+        </tr>
+    </table>
+
+    <h3>Visual Indicators</h3>
+    <ul>
+        <li><strong>Yellow Ring</strong> - Ball is currently grabbed</li>
+        <li><strong>Gray Ring</strong> - Mouse is hovering near ball (within grab range)</li>
+    </ul>
+
+    <h2>🏗️ Project Structure</h2>
+
+    <pre><code>sdl-lua-physics-ball/
+├── app.lua                    # Main game file (950+ lines)
+├── readme.html                # This file
+├── app-mconsole.cmd           # Windows launcher (with console)
+├── app-mwindows.cmd           # Windows launcher (no console)
+├── assets/                    # Optional assets folder
+│   ├── ball-shiny.bmp         # Ball texture (optional)
+│   ├── DejaVuSans.ttf         # Font for text rendering (optional)
+│   └── background.jpg         # Background image (optional)
+└── windows-os/                # Windows-specific files
+    ├── bundle--mingw-copy-here.cmd
+    ├── bundle--mingw-copy-here--textual-informations.txt
+    ├── copy-dlls.sh
+    └── deplist.py
+</code></pre>
+
+    <h2>⚙️ Configuration</h2>
+
+    <p>Edit the configuration flags at the top of <code>app.lua</code>:</p>
+
+    <pre><code>-- Configuration
+local USE_TTF = true   -- Set to false to disable text rendering
+local USE_IMAGE = true -- Set to false to disable background image
+</code></pre>
+
+    <h2>🔬 Technical Details</h2>
+
+    <h3>Physics Engine</h3>
+    <ul>
+        <li><strong>Gravity:</strong> 1 unit per frame</li>
+        <li><strong>Friction:</strong> 0.99 attenuation coefficient (1% energy loss per frame)</li>
+        <li><strong>Restitution:</strong> 0.6 (60% energy retention on bounce)</li>
+        <li><strong>Max Speed:</strong> 200 units/second (prevents tunneling)</li>
+        <li><strong>Substeps:</strong> Up to 5 substeps per frame based on velocity</li>
+    </ul>
+
+    <h3>Wall Types</h3>
+    <table>
+        <tr>
+            <th>Type</th>
+            <th>Behavior</th>
+        </tr>
+        <tr>
+            <td><code>vertical</code></td>
+            <td>Standard wall for left/right boundaries</td>
+        </tr>
+        <tr>
+            <td><code>horizontal</code></td>
+            <td>Standard wall for floor/ceiling</td>
+        </tr>
+        <tr>
+            <td><code>platform</code></td>
+            <td>One-way collision from above (ball can pass through from below)</td>
+        </tr>
+        <tr>
+            <td><code>tilted</code></td>
+            <td>Rotated wall with angle in radians, ball rolls realistically on slopes</td>
+        </tr>
+    </table>
+
+    <h3>Collision Detection Algorithm</h3>
+    <div class="feature-box">
+        <p><strong>Box2D-Style Approach:</strong></p>
+        <ol>
+            <li><strong>Circle-to-Rectangle AABB:</strong> Find closest point on rectangle to circle center</li>
+            <li><strong>Separation First:</strong> Push ball out along collision normal by penetration depth</li>
+            <li><strong>Velocity Reflection:</strong> Project velocity onto normal and reflect with damping</li>
+            <li><strong>Substep Integration:</strong> Divide movement into smaller steps to prevent tunneling</li>
+        </ol>
+    </div>
+
+    <h3>Tilted Wall Physics</h3>
+    <p>Tilted walls use <strong>local space transformation</strong>:</p>
+    <ol>
+        <li>Transform ball position to wall's local space using inverse rotation matrix</li>
+        <li>Perform AABB collision detection in local space</li>
+        <li>Transform collision normal back to world space using forward rotation</li>
+        <li>Calculate tangent velocity for realistic rolling behavior</li>
+    </ol>
+
+    <h3>Rendering</h3>
+    <ul>
+        <li><strong>Axis-Aligned Walls:</strong> Direct SDL_RenderFillRect calls</li>
+        <li><strong>Tilted Walls:</strong> Scanline algorithm with edge intersection
+            <ul>
+                <li>Calculate 4 corners using rotation matrix</li>
+                <li>For each scanline, find edge intersections</li>
+                <li>Draw horizontal line segments between intersection pairs</li>
+            </ul>
+        </li>
+        <li><strong>Ball:</strong> Rotated texture (if available) or procedural circle fill</li>
+    </ul>
+
+    <h2>🛠️ Customization</h2>
+
+    <h3>Adding New Walls</h3>
+    <p>Edit the <code>initializeWalls()</code> function in <code>app.lua</code>:</p>
+
+    <pre><code>-- Add a horizontal platform
+addWall(150, 250, 100, 15, "platform", {200, 150, 100, 255})
+
+-- Add a tilted ramp at 30 degrees
+addWall(200, 300, 120, 20, "tilted", {180, 200, 150, 255}, math.pi/6)
+</code></pre>
+
+    <h3>Wall Function Signature</h3>
+    <pre><code>addWall(x, y, width, height, type, color, angle)
+-- x, y: Top-left corner position
+-- width, height: Wall dimensions
+-- type: "vertical", "horizontal", "platform", or "tilted"
+-- color: {R, G, B, A} table (optional, defaults to white)
+-- angle: Rotation in radians (optional, defaults to 0)
+</code></pre>
+
+    <h3>Modifying Physics Parameters</h3>
+    <pre><code>-- In update() function:
+local gravity = 1              -- Change gravity strength
+local attenuation = 0.99       # Friction coefficient
+local max_speed = 200          -- Maximum velocity
+
+-- In collision response:
+speed_y = -speed_y * 0.6       -- Change to 0.8 for bouncier
+speed_x = speed_x - 1.2 * ...  -- Change 1.2 to adjust restitution
+</code></pre>
+
+    <h2>📝 Code Organization</h2>
+
+    <p>The <code>app.lua</code> file is organized into these sections:</p>
+    <ol>
+        <li><strong>FFI Definitions</strong> - SDL3 type and function declarations</li>
+        <li><strong>Library Loading</strong> - Load SDL3, SDL3_ttf, SDL3_image</li>
+        <li><strong>Initialization</strong> - Create window, renderer, initialize SDL</li>
+        <li><strong>Game State</strong> - Variables for ball physics, walls, input</li>
+        <li><strong>Wall System</strong> - addWall(), clearWalls(), initializeWalls()</li>
+        <li><strong>Asset Loading</strong> - Font, textures, images</li>
+        <li><strong>Physics Update</strong> - Collision detection and response</li>
+        <li><strong>Rendering</strong> - Draw ball, walls, UI elements</li>
+        <li><strong>Main Loop</strong> - Event handling, update, draw cycle</li>
+        <li><strong>Cleanup</strong> - Resource deallocation</li>
+    </ol>
+
+    <h2>🐛 Known Issues</h2>
+
+    <div class="warning">
+        <ul>
+            <li><strong>SDL3 Availability:</strong> SDL3 is currently in development. You may need to build it from
+                source.</li>
+            <li><strong>Asset Loading:</strong> The game searches multiple paths for assets. Ensure they're in the
+                correct location.</li>
+            <li><strong>Performance:</strong> Substep integration is limited to 5 steps. Extremely high velocities may
+                still cause occasional tunneling.</li>
+        </ul>
+    </div>
+
+    <h2>🚧 Future Improvements</h2>
+
+    <ul>
+        <li>Multiple balls with ball-to-ball collision</li>
+        <li>Level editor / save/load level layouts</li>
+        <li>Different ball materials (bouncy, sticky, heavy)</li>
+        <li>Particle effects for collisions</li>
+        <li>Sound effects</li>
+        <li>More wall shapes (circles, polygons)</li>
+        <li>Joints and constraints (like Box2D)</li>
+        <li>Performance optimizations (spatial partitioning)</li>
+    </ul>
+
+    <h2>📚 Resources</h2>
+
+    <ul>
+        <li><a href="https://wiki.libsdl.org/SDL3/FrontPage">SDL3 Documentation</a></li>
+        <li><a href="https://luajit.org/ext_ffi.html">LuaJIT FFI Documentation</a></li>
+        <li><a href="https://box2d.org/documentation/">Box2D Physics Documentation</a></li>
+        <li><a href="https://en.wikipedia.org/wiki/Scanline_rendering">Scanline Rendering Algorithm</a></li>
+    </ul>
+
+    <h2>👤 Author</h2>
+
+    <p><strong>arkenidar</strong></p>
+    <p>Repository: <a
+            href="https://github.com/arkenidar/sdl-lua-physics-ball">github.com/arkenidar/sdl-lua-physics-ball</a></p>
+
+    <h2>📄 License</h2>
+
+    <p>This project uses open-source libraries:</p>
+    <ul>
+        <li><strong>SDL3:</strong> zlib license</li>
+        <li><strong>LuaJIT:</strong> MIT license</li>
+    </ul>
+
+    <hr style="margin: 30px 0; border: none; border-top: 2px solid #bdc3c7;">
+
+    <p style="text-align: center; color: #7f8c8d;">
+        <em>Last updated: November 20, 2025</em>
+    </p>
+</body>
+
+</html>
