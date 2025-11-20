@@ -1,8 +1,8 @@
 local ffi = require("ffi")
 
 -- Configuration
-local USE_TTF = true   -- Set to true to enable text rendering (requires SDL3_ttf)
-local USE_IMAGE = true -- Set to true to enable background image (requires SDL3_image)
+local USE_TTF = false   -- Set to true to enable text rendering (requires SDL3_ttf)
+local USE_IMAGE = false -- Set to true to enable background image (requires SDL3_image)
 
 -- SDL3 FFI definitions
 ffi.cdef [[
